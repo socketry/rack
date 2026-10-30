@@ -465,6 +465,48 @@ describe Rack::Multipart do
     Rack::Multipart.parse_multipart(env).must_equal("a" => "", "b" => "", "c" => "third")
   end
 
+  it "parses an empty part whose delimiter directly follows the header blank line wherever reads end" do
+    data = "--AaB03x\r\n" \
+      "content-disposition: form-data; name=\"a\"\r\n\r\n" \
+      "--AaB03x\r\n" \
+      "content-disposition: form-data; name=\"b\"\r\n\r\n" \
+      "--AaB03x\r\n" \
+      "content-disposition: form-data; name=\"c\"\r\n\r\nthird\r\n" \
+      "--AaB03x--\r\n"
+
+    16.upto(64) do |bufsize|
+      fixture = {
+        "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x",
+        "CONTENT_LENGTH" => data.bytesize.to_s,
+        "rack.multipart.buffer_size" => bufsize,
+        :input => StringIO.new(data),
+      }
+      env = Rack::MockRequest.env_for '/', fixture
+      Rack::Multipart.parse_multipart(env).must_equal "a" => "", "b" => "", "c" => "third"
+    end
+  end
+
+  it "keeps a boundary without a preceding CRLF in the body wherever reads end" do
+    bufsize = 64
+    head = "--AaB03x\r\ncontent-disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\n"
+    fake = "--AaB03x\r\ncontent-disposition: form-data; name=\"role\"\r\n\r\nadmin"
+
+    1.upto(2 * bufsize) do |offset|
+      content = ("a" * offset) + fake + ("b" * bufsize)
+      data = "#{head}#{content}\r\n--AaB03x--\r\n"
+      fixture = {
+        "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x",
+        "CONTENT_LENGTH" => data.bytesize.to_s,
+        "rack.multipart.buffer_size" => bufsize,
+        :input => StringIO.new(data),
+      }
+      env = Rack::MockRequest.env_for '/', fixture
+      params = Rack::Multipart.parse_multipart(env)
+      params.keys.must_equal ["file"]
+      params["file"][:tempfile].read.must_equal content
+    end
+  end
+
   { "inside a MIME head" => 10, "at the start of a MIME body" => 0 }.each do |position, offset|
     it "does not retain parsed parts when reads end #{position}" do
       boundary = "AaB03x"
