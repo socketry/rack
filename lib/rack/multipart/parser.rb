@@ -303,6 +303,7 @@ module Rack
         @state = :FAST_FORWARD
         @mime_index = 0
         @body_retained = nil
+        @at_body_start = false
         @retained_size = 0
         @total_bytes_read = (0 if PARSER_BYTESIZE_LIMIT)
         @content_disposition_quoted_escapes = 0
@@ -311,6 +312,7 @@ module Rack
         @sbuf = StringScanner.new("".b)
         @body_regex = /(?:#{EOL}|\A)--#{Regexp.quote(boundary)}(?:#{EOL}|--)/m
         @body_regex_at_end = /#{@body_regex}\z/m
+        @crlf_body_regex = /#{EOL}--#{Regexp.quote(boundary)}(?:#{EOL}|--)/m
         @end_boundary_size = boundary.bytesize + 4 # (-- at start, -- at finish)
         @rx_max_size = boundary.bytesize + 6 # (\r\n-- at start, either \r\n or -- at finish)
         @head_regex = /(.*?#{EOL})#{EOL}/m
@@ -529,6 +531,7 @@ module Rack
           @body_retained = !filename
 
           @collector.on_mime_head @mime_index, head, filename, content_type, name
+          @at_body_start = true
           @state = :MIME_BODY
         else
           # We raise if the mime part header is too large, to avoid unbounded memory
@@ -541,7 +544,9 @@ module Rack
       end
 
       def handle_mime_body
-        if (body_with_boundary = @sbuf.check_until(@body_regex)) # check but do not advance the pointer yet
+        # Only a part with no body can have a delimiter without a CRLF before it
+        body_regex = @at_body_start ? @body_regex : @crlf_body_regex
+        if (body_with_boundary = @sbuf.check_until(body_regex)) # check but do not advance the pointer yet
           body = body_with_boundary.sub(@body_regex_at_end, '') # remove the boundary from the string
           update_retained_size(body.bytesize) if @body_retained
           @collector.on_mime_body @mime_index, body
@@ -560,6 +565,7 @@ module Rack
             body = @sbuf.peek(delta)
             update_retained_size(body.bytesize) if @body_retained
             @collector.on_mime_body @mime_index, body
+            @at_body_start = false
             @sbuf.pos += delta
           end
           @sbuf.string = @sbuf.rest
